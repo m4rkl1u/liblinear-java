@@ -14,6 +14,7 @@ import java.io.PrintStream;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.Charset;
+import java.util.Arrays;
 import java.util.Formatter;
 import java.util.Locale;
 import java.util.Random;
@@ -1022,6 +1023,212 @@ public class Linear {
     }
 
     /**
+     * iteration way L1 regularization and l2 loss for distribution training 
+     * 
+     * @param prob_col
+     * @param w
+     * @param eps
+     * @param Cp
+     * @param Cn
+     */
+    public static void solve_l1r_l2_svc_iteration(Problem prob_col, double[] w, double[] b, double eps, double Cp, double Cn) {
+    	int l = prob_col.l;
+        int w_size = prob_col.n;
+        int j, s, iter = 0;
+        
+        //int max_iter = 1000;
+        int active_size = w_size;
+        int max_num_linesearch = 20;
+        
+        double sigma = 0.01;
+        double d, G_loss, G, H;
+        double Gmax_old = Double.POSITIVE_INFINITY;
+        double Gmax_new, Gnorm1_new;
+        double Gnorm1_init = 0; // eclipse moans this variable might not be initialized
+        double d_old, d_diff;
+        double loss_old = 0; // eclipse moans this variable might not be initialized
+        double loss_new;
+        double appxcond, cond;
+        
+        int[] index = new int[w_size];
+        byte[] y = new byte[l];
+        //double[] b = new double[l]; // b = 1-ywTx
+        double[] xj_sq = new double[w_size];
+
+        double[] C = new double[] {Cn, 0, Cp};
+        
+        //not need to update the w
+        
+        //
+        for (j = 0; j < l; j++) {
+            //b[j] = 1;
+            if (prob_col.y[j] > 0)
+                y[j] = 1;
+            else
+                y[j] = -1;
+        }
+        for (j = 0; j < w_size; j++) {
+            index[j] = j;
+            xj_sq[j] = 0;
+            for (Feature xi : prob_col.x[j]) {
+                int ind = xi.getIndex() - 1;
+                xi.setValue(xi.getValue() * y[ind]); // x->value stores yi*xij
+                double val = xi.getValue();
+                b[ind] -= w[j] * val;
+
+                xj_sq[j] += C[GETI(y, ind)] * val * val;
+            }
+        }
+        
+        Gmax_new = 0;
+        Gnorm1_new = 0;
+
+        for (j = 0; j < active_size; j++) {
+            int i = j + random.nextInt(active_size - j);
+            swap(index, i, j);
+        }
+
+        for (s = 0; s < active_size; s++) {
+            j = index[s];
+            G_loss = 0;
+            H = 0;
+
+            for (Feature xi : prob_col.x[j]) {
+                int ind = xi.getIndex() - 1;
+                if (b[ind] > 0) {
+                    double val = xi.getValue();
+                    double tmp = C[GETI(y, ind)] * val;
+                    G_loss -= tmp * b[ind];
+                    H += tmp * val;
+                }
+            }
+            G_loss *= 2;
+
+            G = G_loss;
+            H *= 2;
+            H = Math.max(H, 1e-12);
+
+            double Gp = G + 1;
+            double Gn = G - 1;
+            double violation = 0;
+            if (w[j] == 0) {
+                if (Gp < 0)
+                    violation = -Gp;
+                else if (Gn > 0)
+                    violation = Gn;
+                else if (Gp > Gmax_old / l && Gn < -Gmax_old / l) {
+                    active_size--;
+                    swap(index, s, active_size);
+                    s--;
+                    continue;
+                }
+            } else if (w[j] > 0)
+                violation = Math.abs(Gp);
+            else
+                violation = Math.abs(Gn);
+
+            Gmax_new = Math.max(Gmax_new, violation);
+            Gnorm1_new += violation;
+
+            // obtain Newton direction d
+            if (Gp < H * w[j])
+                d = -Gp / H;
+            else if (Gn > H * w[j])
+                d = -Gn / H;
+            else
+                d = -w[j];
+
+            if (Math.abs(d) < 1.0e-12) continue;
+
+            double delta = Math.abs(w[j] + d) - Math.abs(w[j]) + G * d;
+            d_old = 0;
+            int num_linesearch;
+            for (num_linesearch = 0; num_linesearch < max_num_linesearch; num_linesearch++) {
+                d_diff = d_old - d;
+                cond = Math.abs(w[j] + d) - Math.abs(w[j]) - sigma * delta;
+
+                appxcond = xj_sq[j] * d * d + G_loss * d + cond;
+                if (appxcond <= 0) {
+                    for (Feature x : prob_col.x[j]) {
+                        b[x.getIndex() - 1] += d_diff * x.getValue();
+                    }
+                    break;
+                }
+
+                if (num_linesearch == 0) {
+                    loss_old = 0;
+                    loss_new = 0;
+                    for (Feature x : prob_col.x[j]) {
+                        int ind = x.getIndex() - 1;
+                        if (b[ind] > 0) {
+                            loss_old += C[GETI(y, ind)] * b[ind] * b[ind];
+                        }
+                        double b_new = b[ind] + d_diff * x.getValue();
+                        b[ind] = b_new;
+                        if (b_new > 0) {
+                            loss_new += C[GETI(y, ind)] * b_new * b_new;
+                        }
+                    }
+                } else {
+                    loss_new = 0;
+                    for (Feature x : prob_col.x[j]) {
+                        int ind = x.getIndex() - 1;
+                        double b_new = b[ind] + d_diff * x.getValue();
+                        b[ind] = b_new;
+                        if (b_new > 0) {
+                            loss_new += C[GETI(y, ind)] * b_new * b_new;
+                        }
+                    }
+                }
+
+                cond = cond + loss_new - loss_old;
+                if (cond <= 0)
+                    break;
+                else {
+                    d_old = d;
+                    d *= 0.5;
+                    delta *= 0.5;
+                }
+            }
+
+            w[j] += d;
+
+            // recompute b[] if line search takes too many steps
+            if (num_linesearch >= max_num_linesearch) {
+                info("#");
+                for (int i = 0; i < l; i++)
+                    b[i] = 1;
+
+                for (int i = 0; i < w_size; i++) {
+                    if (w[i] == 0) continue;
+                    for (Feature x : prob_col.x[i]) {
+                        b[x.getIndex() - 1] -= w[i] * x.getValue();
+                    }
+                }
+            }
+        }
+
+        if (iter == 0) {
+            Gnorm1_init = Gnorm1_new;
+        }
+        iter++;
+        if (iter % 10 == 0) info(".");
+
+        if (Gmax_new <= eps * Gnorm1_init) {
+            if (active_size == w_size)
+            	return;
+            else {
+                active_size = w_size;
+                info("*");
+                Gmax_old = Double.POSITIVE_INFINITY;
+                //continue;
+            }
+        }
+
+        Gmax_old = Gmax_new;
+    }
+    
+    /**
      * A coordinate descent algorithm for
      * L1-regularized L2-loss support vector classification
      *
@@ -1221,20 +1428,23 @@ public class Linear {
                 Gnorm1_init = Gnorm1_new;
             }
             iter++;
-            if (iter % 10 == 0) info(".");
+            
+            //if (iter % 10 == 0) info(".");
 
             if (Gmax_new <= eps * Gnorm1_init) {
                 if (active_size == w_size)
                     break;
                 else {
                     active_size = w_size;
-                    info("*");
+                    //info("*");
                     Gmax_old = Double.POSITIVE_INFINITY;
                     continue;
                 }
             }
 
             Gmax_old = Gmax_new;
+            
+            System.out.println(Arrays.toString(w));
         }
 
         info("%noptimization finished, #iter = %d%n", iter);
