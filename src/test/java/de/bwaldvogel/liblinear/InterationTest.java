@@ -25,11 +25,19 @@ public class InterationTest {
     	
     	double[] w = new double[prob.n];
     	double[] b = new double[prob.l];
+    	
+    	Arrays.fill(b, 1.0);
+    	
     	double Cp = 0.;
     	double Cn = 0.;
     	
-    	Linear.solve_l1r_l2_svc_iteration(prob_col, w, b, eps, Cp, Cn);
-    	
+    	Linear.solve_l1r_l2_svc_iteration(prob_col, w, b, eps, 1.0, 1.0);
     	System.out.println(Arrays.toString(w));
+
+    	
+    	Linear.solve_l1r_l2_svc_iteration(prob_col, w, b, eps, 1.0, 1.0);
+    	System.out.println(Arrays.toString(w));
+
+
     } 
 }
